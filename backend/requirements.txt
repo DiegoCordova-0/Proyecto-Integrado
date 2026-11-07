@@ -1,3 +1,9 @@
 python-dotenv
 psycopg2-binary
 pymongo
+fastapi
+uvicorn[standard]
+bcrypt
+PyJWT
+python-multipart
+pytest
