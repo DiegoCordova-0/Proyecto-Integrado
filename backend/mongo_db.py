@@ -85,3 +85,7 @@ def listar_logs_auditoria(limit=100, skip=0):
     except Exception as error:
         print(f"Error al consultar auditoría en MongoDB: {error}")
         raise RuntimeError("No fue posible consultar la auditoría.") from error
+
+print("--- Probando conexion a MongoDB ---")
+resultado = registrar_log_auditoria("11111111-1", "TEST_CONEXION", "Prueba de terminal")
+print("Resultado de la prueba:", resultado)

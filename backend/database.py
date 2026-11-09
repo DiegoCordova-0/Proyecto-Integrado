@@ -15,3 +15,13 @@ def obtener_conexion():
         database=os.getenv("DB_NAME", "postgres"),
         connect_timeout=int(os.getenv("DB_CONNECT_TIMEOUT", "5")),
     )
+
+print("--- Probando conexion a Supabase ---")
+conn = obtener_conexion()
+if conn:
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM roles;")
+    print("¡Conexión exitosa! Roles encontrados:", cursor.fetchall())
+    conn.close()
+else:
+    print("Error: No se pudo establecer conexión con PostgreSQL.")
