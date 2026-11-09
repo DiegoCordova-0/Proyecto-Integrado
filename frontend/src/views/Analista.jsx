@@ -43,10 +43,22 @@ export default function Analista() {
   }
 
   async function upload() {
+    setMessage('')
+    if (!csv.file) return
     const body = new FormData()
     body.append('archivo', csv.file)
-    await api.post('/declaraciones/carga-masiva', body, { headers: { 'Content-Type': 'multipart/form-data' } })
-    setMessage('CSV procesado correctamente.')
+    try {
+      const { data } = await api.post('/declaraciones/carga-masiva', body, { headers: { 'Content-Type': 'multipart/form-data' } })
+      const rechazadas = data.resultados.filter((resultado) => !resultado.exito)
+      if (rechazadas.length > 0) {
+        const detalle = rechazadas.map((resultado) => `Fila ${resultado.fila}: ${resultado.mensaje}`).join(' ')
+        setMessage(`CSV procesado: ${data.filas_exitosas} exitosas y ${data.filas_rechazadas} rechazadas. ${detalle}`)
+        return
+      }
+      setMessage(`CSV procesado correctamente: ${data.filas_exitosas} fila(s) guardada(s) en Supabase.`)
+    } catch (error) {
+      setMessage(error.response?.data?.detail || 'No fue posible procesar el CSV.')
+    }
   }
 
   return <main className="page"><header className="page-header"><div><p className="eyebrow">Analista tributario</p><h1>Mantenedor de factores</h1></div></header>

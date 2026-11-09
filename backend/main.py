@@ -25,7 +25,7 @@ from .declarations import (
     listar_declaraciones,
     obtener_detalle_declaracion,
 )
-from .mongo_db import (
+from mongo_db import (
     almacenar_csv_crudo,
     listar_logs_auditoria,
     registrar_log_auditoria,
