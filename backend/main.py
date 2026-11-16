@@ -27,6 +27,7 @@ from .calculator import (
     procesar_factores_tributarios,
 )
 from .declarations import (
+    cambiar_estado_calificacion,
     cambiar_estado_declaracion,
     eliminar_calificacion,
     guardar_calificacion,
@@ -146,11 +147,22 @@ def health() -> dict[str, str]:
 
 
 @app.post("/api/v1/calificaciones/calcular-montos", tags=["Calificaciones"])
-def calcular_montos(payload: CalculoMontosRequest) -> dict[str, dict[str, str]]:
+def calcular_montos(
+    payload: CalculoMontosRequest,
+    request: Request,
+    usuario=Depends(requerir_roles("Analista")),
+) -> dict[str, dict[str, str]]:
     try:
         factores = calcular_factores_desde_montos(payload.montos)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    registrar_log_auditoria(
+        usuario.rut,
+        "CALCULO_FACTORES_DESDE_MONTOS",
+        "Conversión de montos a factores 8..37 ejecutada.",
+        "EXITO",
+        request.client.host if request.client else None,
+    )
     return {"factores": {key: str(value) for key, value in factores.items()}}
 
 
@@ -163,7 +175,8 @@ def consultar_calificaciones(
     instrumento: str | None = None,
     usuario=Depends(requerir_roles("Analista", "Aprobador", "Auditor")),
 ) -> list[dict]:
-    return listar_calificaciones(usuario.id, {
+    corredor_id = usuario.id if usuario.rol == "Analista" else None
+    return listar_calificaciones(corredor_id, {
         "mercado": mercado, "origen": origen, "ejercicio": ejercicio,
         "estado": estado, "instrumento": instrumento,
     })
@@ -209,6 +222,26 @@ def borrar_calificacion(
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return {"mensaje": "Calificación eliminada."}
+
+
+@app.patch("/api/v1/calificaciones/{id_calificacion}/estado", tags=["Calificaciones"])
+def actualizar_estado_calificacion(
+    id_calificacion: int,
+    payload: EstadoRequest,
+    request: Request,
+    usuario=Depends(requerir_roles("Aprobador")),
+) -> dict:
+    try:
+        return cambiar_estado_calificacion(
+            id_calificacion,
+            payload.estado,
+            usuario.rut,
+            request.client.host if request.client else None,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @app.post("/api/v1/calificaciones/carga-masiva", tags=["Calificaciones"])

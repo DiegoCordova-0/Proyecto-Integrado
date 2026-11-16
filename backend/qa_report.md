@@ -1,8 +1,8 @@
 # Reporte QA
 
-- Fecha UTC: 2026-11-16T02:41:00.378748+00:00
+- Fecha UTC: 2026-11-16T04:01:20.155166+00:00
 - Resultado global: **PASS**
-- Pruebas ejecutadas: **14**
+- Pruebas ejecutadas: **15**
 
 ## Resultados esperados vs. obtenidos
 
@@ -18,6 +18,7 @@
 | `backend/test_calculator.py::CalculatorTests::test_rechaza_suma_un_centavo_de_nanounidad` | PASS | PASS | Sin discrepancias. |
 | `backend/test_calculator.py::CalculatorTests::test_trunca_sin_redondear` | PASS | PASS | Sin discrepancias. |
 | `backend/test_calculator.py::CalculatorTests::test_valida_solo_factores_base_y_creditos_independientes` | PASS | PASS | Sin discrepancias. |
+| `backend/test_declarations.py::DeclarationTests::test_cambia_estado_de_calificacion_y_audita` | PASS | PASS | Sin discrepancias. |
 | `backend/test_declarations.py::DeclarationTests::test_cambia_estado_solo_desde_pendiente` | PASS | PASS | Sin discrepancias. |
 | `backend/test_declarations.py::DeclarationTests::test_detalle_contiene_los_29_factores` | PASS | PASS | Sin discrepancias. |
 | `backend/test_declarations.py::DeclarationTests::test_lista_con_filtros_parametrizados` | PASS | PASS | Sin discrepancias. |

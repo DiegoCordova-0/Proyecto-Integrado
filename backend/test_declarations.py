@@ -3,6 +3,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 from backend.declarations import (
+    cambiar_estado_calificacion,
     cambiar_estado_declaracion,
     listar_declaraciones,
     obtener_detalle_declaracion,
@@ -49,6 +50,21 @@ class FakeConnection:
 
 
 class DeclarationTests(unittest.TestCase):
+    @patch("backend.declarations.registrar_log_auditoria")
+    @patch("backend.declarations.obtener_conexion")
+    def test_cambia_estado_de_calificacion_y_audita(self, obtener_conexion, registrar_log):
+        conexion = FakeConnection([
+            ("Pendiente", "CORREDORA", "ACN", "Copec", 10001),
+            (7, "Aprobado"),
+        ])
+        obtener_conexion.return_value = conexion
+
+        resultado = cambiar_estado_calificacion(7, "Aprobado", "11111111-1")
+
+        self.assertEqual(resultado, {"id": 7, "estado": "Aprobado"})
+        self.assertTrue(conexion.committed)
+        registrar_log.assert_called_once()
+
     @patch("backend.declarations.obtener_conexion")
     def test_lista_con_filtros_parametrizados(self, obtener_conexion):
         conexion = FakeConnection(

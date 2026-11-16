@@ -72,9 +72,12 @@ def guardar_calificacion(payload: dict[str, Any], usuario: str, ip_cliente: str 
     return {"id": row[0], "accion": "insertado" if row[1] else "actualizado"}
 
 
-def listar_calificaciones(corredor_id: int, filtros: dict[str, Any]) -> list[dict[str, Any]]:
-    where = ["corredor_id = %s"]
-    params: list[Any] = [corredor_id]
+def listar_calificaciones(corredor_id: int | None, filtros: dict[str, Any]) -> list[dict[str, Any]]:
+    where = []
+    params: list[Any] = []
+    if corredor_id is not None:
+        where.append("corredor_id = %s")
+        params.append(corredor_id)
     for key in ("mercado", "origen", "ejercicio", "estado", "instrumento"):
         if filtros.get(key) not in (None, ""):
             where.append(f"{key} = %s")
@@ -90,6 +93,59 @@ def listar_calificaciones(corredor_id: int, filtros: dict[str, Any]) -> list[dic
             return [dict(zip(fields, row)) for row in rows]
     finally:
         conexion.close()
+
+
+def cambiar_estado_calificacion(
+    id_calificacion: int,
+    nuevo_estado: str,
+    usuario: str,
+    ip_cliente: str | None = None,
+) -> dict[str, Any]:
+    if nuevo_estado not in ("Aprobado", "Rechazado"):
+        raise ValueError("El nuevo estado debe ser Aprobado o Rechazado.")
+    conexion = obtener_conexion()
+    try:
+        with conexion.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT estado, origen, mercado, instrumento, secuencia
+                FROM calificaciones_tributarias
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (id_calificacion,),
+            )
+            calificacion = cursor.fetchone()
+            if not calificacion:
+                raise LookupError("Calificación no encontrada.")
+            if calificacion[1] == "SISTEMA":
+                raise ValueError("Los registros SISTEMA no se pueden aprobar ni rechazar.")
+            if calificacion[0] != "Pendiente":
+                raise ValueError("Solo se pueden aprobar o rechazar calificaciones Pendientes.")
+            cursor.execute(
+                """
+                UPDATE calificaciones_tributarias
+                SET estado = %s, fecha_ultima_modificacion = CURRENT_TIMESTAMP
+                WHERE id = %s
+                RETURNING id, estado
+                """,
+                (nuevo_estado, id_calificacion),
+            )
+            resultado = cursor.fetchone()
+        conexion.commit()
+    except Exception:
+        conexion.rollback()
+        raise
+    finally:
+        conexion.close()
+    registrar_log_auditoria(
+        usuario,
+        "CAMBIO_ESTADO_CALIFICACION",
+        f"Calificación {id_calificacion} ({calificacion[2]} / {calificacion[3]} / secuencia {calificacion[4]}): estado cambiado a {nuevo_estado}.",
+        nuevo_estado.upper(),
+        ip_cliente,
+    )
+    return {"id": resultado[0], "estado": resultado[1]}
 
 
 def eliminar_calificacion(id_calificacion: int, corredor_id: int, usuario: str, ip_cliente: str | None = None) -> None:
