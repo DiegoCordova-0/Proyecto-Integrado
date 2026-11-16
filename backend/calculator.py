@@ -1,5 +1,5 @@
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .database import obtener_conexion
 from .mongo_db import registrar_log_auditoria
@@ -7,6 +7,8 @@ from .mongo_db import registrar_log_auditoria
 ESCALA_8_DECIMALES = Decimal("0.00000001")
 LIMITE_FACTORES = Decimal("1.00000000")
 TOTAL_FACTORES = 29
+FACTOR_INICIAL = 8
+FACTOR_FINAL = 37
 
 
 def truncar_8_decimales(valor: Decimal | str | int) -> Decimal:
@@ -19,6 +21,48 @@ def truncar_8_decimales(valor: Decimal | str | int) -> Decimal:
     if not decimal.is_finite() or decimal < 0:
         raise ValueError("Los factores deben ser decimales finitos no negativos.")
     return decimal.quantize(ESCALA_8_DECIMALES, rounding=ROUND_DOWN)
+
+
+def calcular_factores_desde_montos(
+    montos: Mapping[str, Decimal | str | int],
+) -> dict[str, Decimal]:
+    """Convierte montos 8..37 a factores truncados, sin perder precisión decimal."""
+    valores = {
+        f"monto_{indice}": Decimal(str(montos.get(f"monto_{indice}", 0)))
+        for indice in range(FACTOR_INICIAL, FACTOR_FINAL + 1)
+    }
+    if any(not valor.is_finite() or valor < 0 for valor in valores.values()):
+        raise ValueError("Los montos deben ser decimales finitos no negativos.")
+    suma_base = sum(
+        (valores[f"monto_{indice}"] for indice in range(FACTOR_INICIAL, 20)),
+        Decimal("0"),
+    )
+    if suma_base <= 0:
+        raise ValueError(
+            "La suma de los montos base (columnas 8 a 19) debe ser mayor a 0"
+        )
+    return {
+        f"factor_{indice}": (valores[f"monto_{indice}"] / suma_base).quantize(
+            ESCALA_8_DECIMALES, rounding=ROUND_DOWN
+        )
+        for indice in range(FACTOR_INICIAL, FACTOR_FINAL + 1)
+    }
+
+
+def validar_factores_8_a_19(factores: Mapping[str, Decimal | str | int]) -> Decimal:
+    suma = sum(
+        (truncar_8_decimales(factores.get(f"factor_{indice}", 0))
+         for indice in range(FACTOR_INICIAL, 20)),
+        Decimal("0"),
+    )
+    if suma > LIMITE_FACTORES:
+        raise ValueError(
+            f"La suma de los factores 8 a 19 es {suma}, excede {LIMITE_FACTORES}."
+        )
+    for indice in range(20, FACTOR_FINAL + 1):
+        if truncar_8_decimales(factores.get(f"factor_{indice}", 0)) > LIMITE_FACTORES:
+            raise ValueError(f"El factor {indice} debe estar entre 0 y 1.")
+    return suma
 
 
 def procesar_factores_tributarios(

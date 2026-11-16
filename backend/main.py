@@ -19,13 +19,22 @@ from .auth import (
     renovar_tokens,
     requerir_roles,
 )
-from .calculator import TOTAL_FACTORES, procesar_factores_tributarios
+from .calculator import (
+    FACTOR_FINAL,
+    FACTOR_INICIAL,
+    TOTAL_FACTORES,
+    calcular_factores_desde_montos,
+    procesar_factores_tributarios,
+)
 from .declarations import (
     cambiar_estado_declaracion,
+    eliminar_calificacion,
+    guardar_calificacion,
+    listar_calificaciones,
     listar_declaraciones,
     obtener_detalle_declaracion,
 )
-from mongo_db import (
+from .mongo_db import (
     almacenar_csv_crudo,
     listar_logs_auditoria,
     registrar_log_auditoria,
@@ -42,7 +51,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[frontend_origin],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -93,6 +102,37 @@ class DeclaracionResponse(BaseModel):
     es_valido: bool | None
 
 
+class CalculoMontosRequest(BaseModel):
+    montos: dict[str, Decimal]
+
+
+class CalificacionRequest(BaseModel):
+    modo: str = "FACTORES"
+    corredor_id: int | None = None
+    ejercicio: int = Field(ge=1900, le=2200)
+    mercado: str
+    instrumento: str = Field(min_length=1, max_length=50)
+    fecha_pago: datetime
+    secuencia: int = Field(gt=10000)
+    numero_dividendo: int = 0
+    tipo_sociedad: str = "A"
+    valor_historico: Decimal = 0
+    acogido_isfut: bool = False
+    factor_actualizacion: Decimal = 0
+    descripcion: str | None = None
+    origen: str = "CORREDORA"
+    fuente_ingreso: str | None = None
+    estado: str = "Pendiente"
+    montos: dict[str, Decimal] = Field(default_factory=dict)
+    factores: dict[str, Decimal] = Field(default_factory=dict)
+
+    def to_payload(self, corredor_id: int) -> dict:
+        payload = self.model_dump(exclude={"montos", "factores"})
+        payload["corredor_id"] = corredor_id
+        payload.update(self.montos if self.modo.upper() == "MONTOS" else self.factores)
+        return payload
+
+
 CSV_MAX_BYTES = 10 * 1024 * 1024
 CSV_REQUIRED_COLUMNS = {
     "id_declaracion",
@@ -103,6 +143,120 @@ CSV_REQUIRED_COLUMNS = {
 @app.get("/health", tags=["Sistema"])
 def health() -> dict[str, str]:
     return {"estado": "ok"}
+
+
+@app.post("/api/v1/calificaciones/calcular-montos", tags=["Calificaciones"])
+def calcular_montos(payload: CalculoMontosRequest) -> dict[str, dict[str, str]]:
+    try:
+        factores = calcular_factores_desde_montos(payload.montos)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {"factores": {key: str(value) for key, value in factores.items()}}
+
+
+@app.get("/api/v1/calificaciones", tags=["Calificaciones"])
+def consultar_calificaciones(
+    mercado: str | None = None,
+    origen: str | None = None,
+    ejercicio: int | None = None,
+    estado: str | None = None,
+    instrumento: str | None = None,
+    usuario=Depends(requerir_roles("Analista", "Aprobador", "Auditor")),
+) -> list[dict]:
+    return listar_calificaciones(usuario.id, {
+        "mercado": mercado, "origen": origen, "ejercicio": ejercicio,
+        "estado": estado, "instrumento": instrumento,
+    })
+
+
+@app.post("/api/v1/calificaciones", tags=["Calificaciones"])
+def crear_calificacion(
+    payload: CalificacionRequest,
+    request: Request,
+    usuario=Depends(requerir_roles("Analista")),
+) -> dict:
+    try:
+        return guardar_calificacion(payload.to_payload(usuario.id), usuario.rut, request.client.host if request.client else None)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.put("/api/v1/calificaciones/{id_calificacion}", tags=["Calificaciones"])
+def modificar_calificacion(
+    id_calificacion: int,
+    payload: CalificacionRequest,
+    request: Request,
+    usuario=Depends(requerir_roles("Analista")),
+) -> dict:
+    data = payload.to_payload(usuario.id)
+    data["id"] = id_calificacion
+    try:
+        return guardar_calificacion(data, usuario.rut, request.client.host if request.client else None)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.delete("/api/v1/calificaciones/{id_calificacion}", tags=["Calificaciones"])
+def borrar_calificacion(
+    id_calificacion: int,
+    request: Request,
+    usuario=Depends(requerir_roles("Analista")),
+) -> dict[str, str]:
+    try:
+        eliminar_calificacion(id_calificacion, usuario.id, usuario.rut, request.client.host if request.client else None)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {"mensaje": "Calificación eliminada."}
+
+
+@app.post("/api/v1/calificaciones/carga-masiva", tags=["Calificaciones"])
+async def carga_masiva_calificaciones(
+    request: Request,
+    tipo_carga: str,
+    archivo: UploadFile = File(...),
+    usuario=Depends(requerir_roles("Analista")),
+) -> dict:
+    if tipo_carga.upper() not in ("FACTORES", "MONTOS"):
+        raise HTTPException(status_code=422, detail="tipo_carga debe ser FACTORES o MONTOS.")
+    try:
+        contenido_bytes = await archivo.read(CSV_MAX_BYTES + 1)
+        if len(contenido_bytes) > CSV_MAX_BYTES:
+            raise ValueError("El archivo CSV supera el límite de 10 MB.")
+        contenido = contenido_bytes.decode("utf-8-sig")
+        dialecto = csv.Sniffer().sniff(contenido[:4096], delimiters=",;")
+        filas = list(csv.DictReader(io.StringIO(contenido), dialect=dialecto))
+    except (UnicodeDecodeError, csv.Error, ValueError) as error:
+        raise HTTPException(status_code=422, detail=f"CSV inválido: {error}") from error
+    if not filas:
+        raise HTTPException(status_code=422, detail="El archivo CSV no contiene filas de datos.")
+    almacenar_csv_crudo(archivo.filename or "carga.csv", contenido, usuario.rut, len(filas), request.client.host if request.client else None)
+    resultados = []
+    prefix = "Factor " if tipo_carga.upper() == "FACTORES" else "Monto "
+    for numero, fila in enumerate(filas, 2):
+        try:
+            data: dict[str, Any] = {
+                "modo": tipo_carga.upper(), "corredor_id": usuario.id,
+                "ejercicio": int(fila["Ejercicio"]), "mercado": fila["Mercado"],
+                "instrumento": fila["Instrumento"], "fecha_pago": fila["Fecha"],
+                "secuencia": int(fila["Secuencia"]), "numero_dividendo": int(fila.get("Numero de dividendo") or 0),
+                "tipo_sociedad": fila.get("Tipo sociedad") or "A",
+                "valor_historico": fila.get("Valor Historico") or 0,
+                "fuente_ingreso": f"CSV_{tipo_carga.upper()}",
+            }
+            for indice in range(FACTOR_INICIAL, FACTOR_FINAL + 1):
+                data[f"{'factor' if tipo_carga.upper() == 'FACTORES' else 'monto'}_{indice}"] = fila[f"{prefix}{indice}"]
+            resultado = guardar_calificacion(data, usuario.rut, request.client.host if request.client else None)
+            resultados.append({"fila": numero, "exito": True, **resultado})
+        except (KeyError, TypeError, ValueError, ArithmeticError) as error:
+            resultados.append({"fila": numero, "exito": False, "mensaje": str(error)})
+    return {
+        "insertados": sum(1 for item in resultados if item["exito"] and item.get("accion") == "insertado"),
+        "actualizados": sum(1 for item in resultados if item["exito"] and item.get("accion") == "actualizado"),
+        "rechazados": [item for item in resultados if not item["exito"]],
+        "resultados": resultados,
+    }
 
 
 @app.post("/api/v1/auth/login", response_model=TokenResponse, tags=["Autenticación"])

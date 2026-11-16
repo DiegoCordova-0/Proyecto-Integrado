@@ -38,6 +38,23 @@ class FakeConnection:
 
 
 class CalculatorTests(unittest.TestCase):
+    def test_convierte_montos_reales_a_factores(self):
+        montos = {f"monto_{index}": 0 for index in range(8, 38)}
+        montos.update({"monto_8": 192770580, "monto_9": 64161878, "monto_11": 111812860})
+        factores = calculator.calcular_factores_desde_montos(montos)
+        self.assertEqual(factores["factor_8"], Decimal("0.52277431"))
+        self.assertEqual(factores["factor_9"], Decimal("0.17400052"))
+        self.assertEqual(factores["factor_11"], Decimal("0.30322516"))
+
+    def test_valida_solo_factores_base_y_creditos_independientes(self):
+        factores = {f"factor_{index}": "0" for index in range(8, 38)}
+        factores["factor_8"] = "1.00000000"
+        factores["factor_20"] = "1.00000000"
+        self.assertEqual(calculator.validar_factores_8_a_19(factores), Decimal("1.00000000"))
+        factores["factor_9"] = "0.00000001"
+        with self.assertRaises(ValueError):
+            calculator.validar_factores_8_a_19(factores)
+
     def test_trunca_sin_redondear(self):
         resultado = calculator.truncar_8_decimales("0.123456789")
         self.assertEqual(resultado, Decimal("0.12345678"))

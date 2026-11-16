@@ -1,9 +1,115 @@
+import csv
+import io
+from datetime import date
+from decimal import Decimal
 from typing import Any
 
 from .database import obtener_conexion
+from .calculator import (
+    FACTOR_FINAL,
+    FACTOR_INICIAL,
+    calcular_factores_desde_montos,
+    truncar_8_decimales,
+    validar_factores_8_a_19,
+)
+from .mongo_db import registrar_log_auditoria
 
 
 ESTADOS_DECLARACION = ("Borrador", "Pendiente", "Aprobado", "Rechazado")
+FACTORES = tuple(f"factor_{i}" for i in range(FACTOR_INICIAL, FACTOR_FINAL + 1))
+MONTOS = tuple(f"monto_{i}" for i in range(FACTOR_INICIAL, FACTOR_FINAL + 1))
+LLAVE_CALIFICACION = ("corredor_id", "ejercicio", "mercado", "instrumento", "secuencia", "fecha_pago")
+
+
+def _normalizar_calificacion(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Decimal], dict[str, Decimal]]:
+    modo = payload.get("modo", "FACTORES").upper()
+    montos = {nombre: Decimal(str(payload.get(nombre, 0) or 0)) for nombre in MONTOS}
+    factores = {nombre: Decimal(str(payload.get(nombre, 0) or 0)) for nombre in FACTORES}
+    if modo == "MONTOS":
+        factores = calcular_factores_desde_montos(montos)
+    elif modo != "FACTORES":
+        raise ValueError("El modo debe ser MONTOS o FACTORES.")
+    validar_factores_8_a_19(factores)
+    meta = {key: payload[key] for key in (
+        "corredor_id", "ejercicio", "mercado", "instrumento", "fecha_pago",
+        "secuencia", "numero_dividendo", "tipo_sociedad", "valor_historico",
+        "acogido_isfut", "factor_actualizacion", "descripcion", "origen",
+    ) if key in payload}
+    meta.setdefault("origen", "CORREDORA")
+    meta["fuente_ingreso"] = {"MONTOS": "CSV_MONTOS", "FACTORES": "CSV_FACTORES"}.get(
+        payload.get("fuente_ingreso", modo), payload.get("fuente_ingreso", "MANUAL")
+    )
+    meta["estado"] = payload.get("estado", "Pendiente")
+    return meta, montos, factores
+
+
+def guardar_calificacion(payload: dict[str, Any], usuario: str, ip_cliente: str | None = None) -> dict[str, Any]:
+    meta, montos, factores = _normalizar_calificacion(payload)
+    columnas = list(meta) + list(MONTOS) + list(FACTORES)
+    valores = [meta[key] for key in meta] + [montos[key] for key in MONTOS] + [factores[key] for key in FACTORES]
+    insert_cols = ", ".join(columnas)
+    placeholders = ", ".join(["%s"] * len(valores))
+    updates = ", ".join(f"{key}=EXCLUDED.{key}" for key in columnas if key not in LLAVE_CALIFICACION and key != "origen")
+    query = f"""INSERT INTO calificaciones_tributarias ({insert_cols})
+        VALUES ({placeholders}) ON CONFLICT ({', '.join(LLAVE_CALIFICACION)})
+        DO UPDATE SET {updates}, fecha_ultima_modificacion=CURRENT_TIMESTAMP
+        WHERE calificaciones_tributarias.origen <> 'SISTEMA'
+        RETURNING id, (xmax = 0) AS insertado"""
+    conexion = obtener_conexion()
+    try:
+        with conexion.cursor() as cursor:
+            cursor.execute(query, valores)
+            row = cursor.fetchone()
+        conexion.commit()
+    except Exception:
+        conexion.rollback()
+        raise
+    finally:
+        conexion.close()
+    if not row:
+        raise ValueError("No se puede modificar un registro SISTEMA.")
+    registrar_log_auditoria(usuario, "UPSERT_CALIFICACION", f"Calificación {row[0]} guardada.", "EXITO", ip_cliente)
+    return {"id": row[0], "accion": "insertado" if row[1] else "actualizado"}
+
+
+def listar_calificaciones(corredor_id: int, filtros: dict[str, Any]) -> list[dict[str, Any]]:
+    where = ["corredor_id = %s"]
+    params: list[Any] = [corredor_id]
+    for key in ("mercado", "origen", "ejercicio", "estado", "instrumento"):
+        if filtros.get(key) not in (None, ""):
+            where.append(f"{key} = %s")
+            params.append(filtros[key])
+    fields = ["id", *LLAVE_CALIFICACION[1:], "numero_dividendo", "tipo_sociedad", "valor_historico",
+              "acogido_isfut", "factor_actualizacion", "descripcion", "origen", "fuente_ingreso",
+              "estado", "fecha_creacion", "fecha_ultima_modificacion", *FACTORES]
+    conexion = obtener_conexion()
+    try:
+        with conexion.cursor() as cursor:
+            cursor.execute(f"SELECT {', '.join(fields)} FROM calificaciones_tributarias WHERE {' AND '.join(where)} ORDER BY ejercicio DESC, id DESC", params)
+            rows = cursor.fetchall()
+            return [dict(zip(fields, row)) for row in rows]
+    finally:
+        conexion.close()
+
+
+def eliminar_calificacion(id_calificacion: int, corredor_id: int, usuario: str, ip_cliente: str | None = None) -> None:
+    conexion = obtener_conexion()
+    try:
+        with conexion.cursor() as cursor:
+            cursor.execute("SELECT origen FROM calificaciones_tributarias WHERE id=%s AND corredor_id=%s", (id_calificacion, corredor_id))
+            row = cursor.fetchone()
+            if not row:
+                raise LookupError("Calificación no encontrada.")
+            if row[0] == "SISTEMA":
+                raise ValueError("Los registros SISTEMA no se pueden eliminar.")
+            cursor.execute("DELETE FROM calificaciones_tributarias WHERE id=%s AND corredor_id=%s", (id_calificacion, corredor_id))
+        conexion.commit()
+    except Exception:
+        conexion.rollback()
+        raise
+    finally:
+        conexion.close()
+    registrar_log_auditoria(usuario, "ELIMINAR_CALIFICACION", f"Calificación {id_calificacion} eliminada.", "EXITO", ip_cliente)
 
 
 def listar_declaraciones(

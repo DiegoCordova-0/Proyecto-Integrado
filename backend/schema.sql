@@ -109,3 +109,40 @@ CREATE INDEX IF NOT EXISTS idx_declaraciones_periodo
     ON declaraciones_tributarias (periodo_tributario);
 CREATE INDEX IF NOT EXISTS idx_declaraciones_estado
     ON declaraciones_tributarias (estado);
+
+CREATE TABLE IF NOT EXISTS calificaciones_tributarias (
+    id SERIAL PRIMARY KEY,
+    corredor_id INT NOT NULL,
+    ejercicio INT NOT NULL CHECK (ejercicio BETWEEN 1900 AND 2200),
+    mercado VARCHAR(10) NOT NULL CHECK (mercado IN ('ACN', 'CFI', 'FFMM')),
+    instrumento VARCHAR(50) NOT NULL,
+    fecha_pago DATE NOT NULL,
+    secuencia BIGINT NOT NULL CHECK (secuencia > 10000),
+    numero_dividendo INT NOT NULL DEFAULT 0,
+    tipo_sociedad CHAR(1) NOT NULL DEFAULT 'A' CHECK (tipo_sociedad IN ('A', 'C')),
+    valor_historico NUMERIC(18, 2) NOT NULL DEFAULT 0,
+    acogido_isfut BOOLEAN NOT NULL DEFAULT FALSE,
+    factor_actualizacion NUMERIC(12, 8) NOT NULL DEFAULT 0,
+    descripcion TEXT,
+    origen VARCHAR(20) NOT NULL DEFAULT 'CORREDORA' CHECK (origen IN ('CORREDORA', 'SISTEMA')),
+    fuente_ingreso VARCHAR(30) NOT NULL DEFAULT 'MANUAL'
+        CHECK (fuente_ingreso IN ('MANUAL', 'CSV_FACTORES', 'CSV_MONTOS', 'SISTEMA')),
+    estado VARCHAR(20) NOT NULL DEFAULT 'Pendiente'
+        CHECK (estado IN ('Pendiente', 'Aprobado', 'Rechazado')),
+    fecha_creacion TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    fecha_ultima_modificacion TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (corredor_id, ejercicio, mercado, instrumento, secuencia, fecha_pago)
+);
+
+DO $$
+DECLARE
+    indice integer;
+BEGIN
+    FOR indice IN 8..37 LOOP
+        EXECUTE format('ALTER TABLE calificaciones_tributarias ADD COLUMN IF NOT EXISTS monto_%s NUMERIC(18, 2)', indice);
+        EXECUTE format('ALTER TABLE calificaciones_tributarias ADD COLUMN IF NOT EXISTS factor_%s NUMERIC(12, 8) NOT NULL DEFAULT 0', indice);
+    END LOOP;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_calificaciones_filtros
+    ON calificaciones_tributarias (corredor_id, ejercicio, mercado, estado);
