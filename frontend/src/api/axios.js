@@ -12,6 +12,12 @@ export const api = axios.create({
   },
 })
 
+export function omitEmptyParams(params) {
+  return Object.fromEntries(
+    Object.entries(params).filter(([, value]) => value !== '' && value !== null && value !== undefined),
+  )
+}
+
 const refreshClient = axios.create({
   baseURL: API_BASE_URL,
   headers: {

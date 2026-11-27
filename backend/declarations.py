@@ -21,6 +21,14 @@ MONTOS = tuple(f"monto_{i}" for i in range(FACTOR_INICIAL, FACTOR_FINAL + 1))
 LLAVE_CALIFICACION = ("corredor_id", "ejercicio", "mercado", "instrumento", "secuencia", "fecha_pago")
 
 
+def validate_csv_text_cell(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if value.lstrip(" \t\r\n").startswith(("=", "+", "-", "@")):
+        raise ValueError("Las celdas de texto CSV no pueden iniciar con fórmulas.")
+    return value
+
+
 def _normalizar_calificacion(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Decimal], dict[str, Decimal]]:
     modo = payload.get("modo", "FACTORES").upper()
     montos = {nombre: Decimal(str(payload.get(nombre, 0) or 0)) for nombre in MONTOS}
@@ -36,9 +44,7 @@ def _normalizar_calificacion(payload: dict[str, Any]) -> tuple[dict[str, Any], d
         "acogido_isfut", "factor_actualizacion", "descripcion", "origen",
     ) if key in payload}
     meta.setdefault("origen", "CORREDORA")
-    meta["fuente_ingreso"] = {"MONTOS": "CSV_MONTOS", "FACTORES": "CSV_FACTORES"}.get(
-        payload.get("fuente_ingreso", modo), payload.get("fuente_ingreso", "MANUAL")
-    )
+    meta["fuente_ingreso"] = payload.get("fuente_ingreso") or "MANUAL"
     meta["estado"] = payload.get("estado", "Pendiente")
     return meta, montos, factores
 
@@ -85,10 +91,15 @@ def listar_calificaciones(corredor_id: int | None, filtros: dict[str, Any]) -> l
     fields = ["id", *LLAVE_CALIFICACION[1:], "numero_dividendo", "tipo_sociedad", "valor_historico",
               "acogido_isfut", "factor_actualizacion", "descripcion", "origen", "fuente_ingreso",
               "estado", "fecha_creacion", "fecha_ultima_modificacion", *FACTORES]
+    where_clause = f" WHERE {' AND '.join(where)}" if where else ""
     conexion = obtener_conexion()
     try:
         with conexion.cursor() as cursor:
-            cursor.execute(f"SELECT {', '.join(fields)} FROM calificaciones_tributarias WHERE {' AND '.join(where)} ORDER BY ejercicio DESC, id DESC", params)
+            cursor.execute(
+                f"SELECT {', '.join(fields)} FROM calificaciones_tributarias"
+                f"{where_clause} ORDER BY ejercicio DESC, id DESC",
+                params,
+            )
             rows = cursor.fetchall()
             return [dict(zip(fields, row)) for row in rows]
     finally:

@@ -1,46 +1,83 @@
-import { useCallback, useEffect, useState } from 'react'
-import api from '../api/axios'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import api, { omitEmptyParams } from '../api/axios'
+import KpiGrid from '../components/KpiGrid'
 
 const factorIndexes = Array.from({ length: 30 }, (_, index) => index + 8)
 
 export default function Aprobador() {
   const [filters, setFilters] = useState({ estado: 'Pendiente', mercado: '', origen: '', ejercicio: '', instrumento: '' })
   const [items, setItems] = useState([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [isProcessing, setIsProcessing] = useState(false)
   const [selected, setSelected] = useState(null)
-  const [message, setMessage] = useState('')
+  const [message, setMessage] = useState(null)
+  const summary = useMemo(() => {
+    const countStatus = (status) => items.filter((item) => String(item.estado || '').toUpperCase() === status).length
+    return [
+      { label: 'Total calificaciones', value: items.length },
+      { label: 'Pendientes', value: countStatus('PENDIENTE') },
+      { label: 'Aprobadas', value: countStatus('APROBADO') },
+      { label: 'Rechazadas', value: countStatus('RECHAZADO') },
+    ]
+  }, [items])
 
-  const load = useCallback(async () => {
-    try {
-      const { data } = await api.get('/calificaciones', { params: filters })
-      setItems(data)
-    } catch {
-      setMessage('No fue posible cargar las calificaciones.')
-    }
+  const fetchItems = useCallback(async () => {
+    const { data } = await api.get('/calificaciones', { params: omitEmptyParams(filters) })
+    return data
   }, [filters])
 
+  const load = useCallback(async () => {
+    setIsLoading(true)
+    try {
+      setItems(await fetchItems())
+    } catch {
+      setMessage({ text: 'No fue posible cargar las calificaciones.', type: 'error' })
+    } finally {
+      setIsLoading(false)
+    }
+  }, [fetchItems])
+
   useEffect(() => {
-    load()
-  }, [load])
+    let active = true
+    async function loadInitial() {
+      try {
+        const data = await fetchItems()
+        if (active) setItems(data)
+      } catch {
+        if (active) setMessage({ text: 'No fue posible cargar las calificaciones.', type: 'error' })
+      } finally {
+        if (active) setIsLoading(false)
+      }
+    }
+    loadInitial()
+    return () => { active = false }
+  }, [fetchItems])
 
   async function changeStatus(id, estado) {
     if (!window.confirm(`¿Confirmas marcar esta calificación como ${estado}?`)) return
+    setIsProcessing(true)
     try {
       await api.patch(`/calificaciones/${id}/estado`, { estado })
       setSelected(null)
-      setMessage(`Calificación ${estado.toLowerCase()} correctamente.`)
+      setMessage({ text: `Calificación ${estado.toLowerCase()} correctamente.`, type: 'success' })
       await load()
     } catch (error) {
-      setMessage(error.response?.data?.detail || 'No fue posible cambiar el estado.')
+      setMessage({ text: error.response?.data?.detail || 'No fue posible cambiar el estado.', type: 'error' })
+    } finally {
+      setIsProcessing(false)
     }
   }
 
   function updateFilter(key, value) {
+    setIsLoading(true)
+    setMessage(null)
     setFilters((current) => ({ ...current, [key]: value }))
   }
 
   return <main className="page">
     <p className="eyebrow">Aprobador</p>
     <h1>Bandeja de calificaciones</h1>
+    <KpiGrid items={summary} label="Resumen de calificaciones" />
     <section className="card filters">
       <select aria-label="Estado" value={filters.estado} onChange={(event) => updateFilter('estado', event.target.value)}>
         <option value="">Todos los estados</option><option>Pendiente</option><option>Aprobado</option><option>Rechazado</option>
@@ -53,21 +90,26 @@ export default function Aprobador() {
       </select>
       <input aria-label="Ejercicio" placeholder="Ejercicio" type="number" value={filters.ejercicio} onChange={(event) => updateFilter('ejercicio', event.target.value)} />
       <input aria-label="Instrumento" placeholder="Instrumento" value={filters.instrumento} onChange={(event) => updateFilter('instrumento', event.target.value)} />
-      <button className="primary" onClick={load}>Buscar</button>
+      <button className="primary" disabled={isLoading} onClick={() => { setMessage(null); load() }}>Buscar</button>
     </section>
+    {isLoading && <p className="loading-indicator" role="status">Cargando calificaciones...</p>}
     <section className="card table-wrap">
       <table><thead><tr><th></th><th>Ejercicio</th><th>Mercado</th><th>Instrumento</th><th>Secuencia</th><th>Origen</th><th>Estado</th><th>Factor 8</th><th>Factor 37</th><th>Acciones</th></tr></thead>
-        <tbody>{items.map((item) => <tr key={item.id}>
-          <td><input type="radio" name="selected-calificacion" checked={selected?.id === item.id} onChange={() => setSelected(item)} /></td>
-          <td>{item.ejercicio}</td><td>{item.mercado}</td><td>{item.instrumento}</td><td>{item.secuencia}</td><td>{item.origen}</td><td>{item.estado}</td><td>{item.factor_8}</td><td>{item.factor_37}</td>
-          <td><button onClick={() => setSelected(item)}>Ver detalle</button></td>
-        </tr>)}</tbody>
+        <tbody>{items.length === 0
+          ? <tr><td colSpan="10">{isLoading ? 'Cargando calificaciones...' : 'No hay calificaciones que coincidan con los filtros.'}</td></tr>
+          : items.map((item) => <tr key={item.id}>
+            <td><input type="radio" name="selected-calificacion" checked={selected?.id === item.id} onChange={() => { setMessage(null); setSelected(item) }} /></td>
+            <td className="numeric-data">{item.ejercicio}</td><td>{item.mercado}</td><td>{item.instrumento}</td><td className="numeric-data">{item.secuencia}</td><td>{item.origen}</td><td><span className={`badge status-${item.estado?.toLowerCase()}`}>{item.estado}</span></td><td className="numeric-data">{item.factor_8}</td><td className="numeric-data">{item.factor_37}</td>
+            <td><button onClick={() => { setMessage(null); setSelected(item) }}>Ver detalle</button></td>
+          </tr>)}
+        </tbody>
       </table>
     </section>
     {selected && <div className="modal-backdrop" role="presentation" onClick={() => setSelected(null)}>
       <section className="modal card" role="dialog" aria-modal="true" aria-labelledby="calificacion-detail-title" onClick={(event) => event.stopPropagation()}>
         <button className="modal-close" onClick={() => setSelected(null)}>Cerrar</button>
         <h2 id="calificacion-detail-title">Detalle de calificación</h2>
+        {message && <p className={`notice ${message.type}`}>{message.text}</p>}
         <div className="factor-grid">
           <label>Mercado<input readOnly value={selected.mercado || ''} /></label>
           <label>Instrumento<input readOnly value={selected.instrumento || ''} /></label>
@@ -78,9 +120,9 @@ export default function Aprobador() {
         </div>
         <p>Estado: <strong>{selected.estado}</strong></p>
         <div className="factor-grid">{factorIndexes.map((index) => <label key={index}>Factor {index}<input readOnly value={selected[`factor_${index}`] ?? '0.00000000'} /></label>)}</div>
-        {selected.estado === 'Pendiente' && selected.origen !== 'SISTEMA' && <div className="modal-actions"><button className="primary" onClick={() => changeStatus(selected.id, 'Aprobado')}>Aprobar</button><button onClick={() => changeStatus(selected.id, 'Rechazado')}>Rechazar</button></div>}
+        {selected.estado === 'Pendiente' && selected.origen !== 'SISTEMA' && <div className="modal-actions"><button className="primary" disabled={isProcessing} onClick={() => changeStatus(selected.id, 'Aprobado')}>{isProcessing ? 'Procesando...' : 'Aprobar'}</button><button disabled={isProcessing} onClick={() => changeStatus(selected.id, 'Rechazado')}>{isProcessing ? 'Procesando...' : 'Rechazar'}</button></div>}
       </section>
     </div>}
-    {message && <p className="error">{message}</p>}
+    {!selected && message && <p className={`notice ${message.type}`}>{message.text}</p>}
   </main>
 }

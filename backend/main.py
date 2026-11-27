@@ -3,7 +3,7 @@ import io
 import os
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,6 +34,7 @@ from .declarations import (
     listar_calificaciones,
     listar_declaraciones,
     obtener_detalle_declaracion,
+    validate_csv_text_cell,
 )
 from .mongo_db import (
     almacenar_csv_crudo,
@@ -122,7 +123,7 @@ class CalificacionRequest(BaseModel):
     factor_actualizacion: Decimal = 0
     descripcion: str | None = None
     origen: str = "CORREDORA"
-    fuente_ingreso: str | None = None
+    fuente_ingreso: str | None = "MANUAL"
     estado: str = "Pendiente"
     montos: dict[str, Decimal] = Field(default_factory=dict)
     factores: dict[str, Decimal] = Field(default_factory=dict)
@@ -130,6 +131,7 @@ class CalificacionRequest(BaseModel):
     def to_payload(self, corredor_id: int) -> dict:
         payload = self.model_dump(exclude={"montos", "factores"})
         payload["corredor_id"] = corredor_id
+        payload["fuente_ingreso"] = payload.get("fuente_ingreso") or "MANUAL"
         payload.update(self.montos if self.modo.upper() == "MONTOS" else self.factores)
         return payload
 
@@ -170,15 +172,27 @@ def calcular_montos(
 def consultar_calificaciones(
     mercado: str | None = None,
     origen: str | None = None,
-    ejercicio: int | None = None,
+    ejercicio: Optional[str] = None,
     estado: str | None = None,
     instrumento: str | None = None,
     usuario=Depends(requerir_roles("Analista", "Aprobador", "Auditor")),
 ) -> list[dict]:
+    ejercicio_filtro = None
+    if ejercicio is not None:
+        ejercicio = ejercicio.strip()
+        if ejercicio:
+            if not ejercicio.isdecimal():
+                raise HTTPException(status_code=422, detail="El ejercicio debe ser numérico")
+            ejercicio_filtro = int(ejercicio)
+
+    estado_filtro = estado.strip() if estado is not None else None
+    if not estado_filtro or estado_filtro.upper() == "TODOS":
+        estado_filtro = None
+
     corredor_id = usuario.id if usuario.rol == "Analista" else None
     return listar_calificaciones(corredor_id, {
-        "mercado": mercado, "origen": origen, "ejercicio": ejercicio,
-        "estado": estado, "instrumento": instrumento,
+        "mercado": mercado, "origen": origen, "ejercicio": ejercicio_filtro,
+        "estado": estado_filtro, "instrumento": instrumento,
     })
 
 
@@ -269,6 +283,8 @@ async def carga_masiva_calificaciones(
     prefix = "Factor " if tipo_carga.upper() == "FACTORES" else "Monto "
     for numero, fila in enumerate(filas, 2):
         try:
+            for campo in ("Mercado", "Instrumento", "Fecha", "Tipo sociedad"):
+                fila[campo] = validate_csv_text_cell(fila.get(campo))
             data: dict[str, Any] = {
                 "modo": tipo_carga.upper(), "corredor_id": usuario.id,
                 "ejercicio": int(fila["Ejercicio"]), "mercado": fila["Mercado"],
